@@ -1,0 +1,460 @@
+<!DOCTYPE html>
+<html lang="hi">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Auto Parts Manager</title>
+<meta name="theme-color" content="#0f1115">
+<meta name="mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-capable" content="yes">
+<meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+<meta name="apple-mobile-web-app-title" content="Auto Parts">
+<script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-app-compat.js"></script>
+<script src="https://www.gstatic.com/firebasejs/10.14.0/firebase-firestore-compat.js"></script>
+<style>
+:root{
+  --bg:#0f1115; --panel:#171a21; --panel2:#1e222b; --border:#2a2f3a;
+  --text:#e8eaed; --muted:#8b93a3; --accent:#3b82f6; --accent2:#22c55e;
+  --danger:#ef4444; --warn:#f59e0b;
+  box-sizing:border-box;
+  padding-top:env(safe-area-inset-top,0px); padding-bottom:env(safe-area-inset-bottom,0px);
+}
+@media (prefers-color-scheme: light){
+  :root:not([data-theme="dark"]){
+    --bg:#f5f6f8; --panel:#fff; --panel2:#f0f1f4; --border:#e2e4ea; --text:#1a1d23; --muted:#6b7280;
+  }
+}
+*{box-sizing:border-box}
+html,body{height:100%;margin:0;background:var(--bg);color:var(--text);font-family:-apple-system,Segoe UI,Roboto,sans-serif}
+body{padding:0;max-width:100vw;overflow-x:hidden}
+.wrap{max-width:720px;margin:0 auto;padding:10px 12px 90px}
+h1{font-size:18px;margin:6px 0 2px}
+.sub{color:var(--muted);font-size:12px;margin-bottom:10px}
+.card{background:var(--panel);border:1px solid var(--border);border-radius:14px;padding:14px;margin-bottom:12px}
+.row{display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+input,select{background:var(--panel2);border:1px solid var(--border);color:var(--text);border-radius:9px;padding:9px 10px;font-size:14px;width:100%}
+label{font-size:12px;color:var(--muted);display:block;margin:6px 0 3px}
+button{background:var(--accent);color:#fff;border:none;border-radius:9px;padding:10px 14px;font-size:14px;font-weight:600;cursor:pointer}
+button.ghost{background:transparent;border:1px solid var(--border);color:var(--text)}
+button.danger{background:var(--danger)}
+button:disabled{opacity:.5}
+table{width:100%;border-collapse:collapse;font-size:13px}
+th,td{padding:7px 4px;border-bottom:1px solid var(--border);text-align:left}
+.stat{background:var(--panel2);border-radius:12px;padding:12px;flex:1;min-width:100px}
+.stat b{font-size:20px;display:block}
+.stat span{color:var(--muted);font-size:11px}
+.nav{position:fixed;bottom:0;left:0;right:0;background:var(--panel);border-top:1px solid var(--border);
+  display:none;padding:6px env(safe-area-inset-top,0) calc(6px + env(safe-area-inset-bottom,0px));z-index:9}
+.nav button{flex:1;background:none;color:var(--muted);font-weight:500;border-radius:8px;padding:8px 2px;font-size:11px}
+.nav button.active{color:var(--accent);background:var(--panel2)}
+.pill{display:inline-block;background:var(--panel2);border:1px solid var(--border);border-radius:20px;padding:3px 10px;font-size:11px;color:var(--muted)}
+.low{color:var(--danger);font-weight:700}
+.msg{font-size:13px;padding:8px;border-radius:8px;margin-top:8px}
+.msg.ok{background:rgba(34,197,94,.15);color:var(--accent2)}
+.msg.err{background:rgba(239,68,68,.15);color:var(--danger)}
+.hidden{display:none}
+.item-row{display:flex;gap:6px;margin-bottom:6px;align-items:center}
+.item-row select{flex:2}.item-row input{flex:1}
+</style>
+</head>
+<body>
+<div class="wrap" id="app">
+  <h1>🔧 Auto Parts Manager</h1>
+  <div class="sub" id="whoami">Loading account…</div>
+  <div id="content"></div>
+</div>
+<div class="nav" id="nav"></div>
+
+<script>
+const firebaseConfig = {
+  apiKey: "AIzaSyC3uSHKSFHPO8omiWsBPz7dPZPGRoDW-6M",
+  authDomain: "auto-parts-shop-2177b.firebaseapp.com",
+  projectId: "auto-parts-shop-2177b",
+  storageBucket: "auto-parts-shop-2177b.firebasestorage.app",
+  messagingSenderId: "226287331747",
+  appId: "1:226287331747:web:9dce0dd254158449549216"
+};
+let db=null,staffSession=null,settingsLoaded=false;
+let settings={shopName:"My Auto Parts Shop",adminPin:"",staff:[],gstRate:18};
+let parts=[],sales=[],tab="sale";
+
+async function boot(){
+  try{
+    firebase.initializeApp(firebaseConfig);
+    db = firebase.firestore();
+  }catch(e){
+    document.getElementById('whoami').textContent="Firebase शुरू नहीं हो पाया: "+(e&&e.message?e.message:'');
+    return;
+  }
+  try{ const saved=sessionStorage.getItem('apm_session'); if(saved) staffSession=JSON.parse(saved); }catch(e){}
+  let pending=false;
+  const scheduleRender=()=>{ if(pending) return; pending=true; queueMicrotask(()=>{ pending=false; settingsLoaded=true; render(); }); };
+  db.doc("settings/config").onSnapshot(docSnap=>{ if(docSnap && docSnap.exists) settings=Object.assign(settings,docSnap.data()); scheduleRender(); },
+    err=>{ document.getElementById('whoami').textContent="Firestore access error: "+err.message; });
+  db.collection("parts").onSnapshot(snap=>{ parts = snap.docs.map(d=>({id:d.id,...d.data()})); scheduleRender(); });
+  db.collection("sales").onSnapshot(snap=>{ sales = snap.docs.map(d=>({id:d.id,...d.data()})); scheduleRender(); });
+  renderNav(); render();
+}
+
+function isAdminSession(){ return !!(staffSession && staffSession.type==='admin'); }
+function currentStaff(){ return (staffSession && staffSession.type==='staff') ? (settings.staff||[]).find(s=>s.id===staffSession.id) : null; }
+function canSale(){ return isAdminSession() || !!(currentStaff() && currentStaff().canSale); }
+function canStock(){ return isAdminSession() || !!(currentStaff() && currentStaff().canStock); }
+function logout(){ staffSession=null; try{sessionStorage.removeItem('apm_session');}catch(e){} render(); }
+
+function renderNav(){
+  const tabs=[["sale","💰 Sale"],["dash","📊 Dashboard"],["stock","📦 Stock"],["settings","⚙️ Settings"]];
+  document.getElementById('nav').innerHTML = tabs.map(t=>
+    `<button data-t="${t[0]}" class="${tab===t[0]?'active':''}">${t[1]}</button>`).join('');
+}
+document.getElementById('nav').addEventListener('click', e=>{
+  const b=e.target.closest('button[data-t]'); if(!b) return;
+  tab=b.dataset.t; renderNav(); render();
+});
+
+function fmt(n){ return "₹"+(Number(n)||0).toLocaleString('en-IN'); }
+
+function render(){
+  if(staffSession && staffSession.type==='staff' && settingsLoaded && !currentStaff()){ logout(); return; }
+  if(!staffSession){ document.getElementById('nav').style.display='none'; renderGate(); return; }
+  document.getElementById('nav').style.display='flex';
+  const who = isAdminSession()?'Admin':(currentStaff()?currentStaff().name:'Staff');
+  document.getElementById('whoami').innerHTML = who+' · <a href="#" onclick="logout();return false;" style="color:var(--accent)">Logout</a>';
+  const c=document.getElementById('content');
+  if(tab==="sale") return c.innerHTML=canSale()?saleView():noAccess();
+  if(tab==="dash") return c.innerHTML=isAdminSession()?dashView():noAccess();
+  if(tab==="stock") return c.innerHTML=canStock()?stockView():noAccess();
+  if(tab==="settings") return c.innerHTML=isAdminSession()?settingsView():noAccess();
+}
+function renderGate(){
+  document.getElementById('whoami').textContent='';
+  const c=document.getElementById('content');
+  if(!settingsLoaded){ c.innerHTML='<div class="card">Loading…</div>'; return; }
+  if(!settings.adminPin){
+    c.innerHTML=`<div class="card"><b>पहली बार सेटअप</b>
+      <div class="sub">Shop Admin के लिए एक PIN set करें (कम से कम 4 digit)।</div>
+      <label>Admin PIN</label><input id="setupPin" type="password" inputmode="numeric" maxlength="6">
+      <button style="margin-top:8px" onclick="setupAdmin()">Admin PIN Set करें</button>
+      <div id="gateMsg"></div>
+    </div>`;
+    return;
+  }
+  c.innerHTML=`<div class="card"><b>PIN डालें</b>
+    <div class="sub">Admin ya Staff — apna PIN daalein</div>
+    <label>PIN</label><input id="loginPin" type="password" inputmode="numeric" maxlength="6">
+    <button style="margin-top:8px" onclick="doLogin()">Login</button>
+    <div id="gateMsg"></div>
+  </div>`;
+}
+async function setupAdmin(){
+  const pin=document.getElementById('setupPin').value.trim();
+  if(pin.length<4) return document.getElementById('gateMsg').innerHTML='<div class="msg err">कम से कम 4 digit PIN डालें</div>';
+  try{
+    settings.adminPin=pin;
+    await db.doc("settings/config").set(settings);
+    staffSession={type:'admin'};
+    try{sessionStorage.setItem('apm_session',JSON.stringify(staffSession));}catch(e){}
+    render();
+  }catch(e){
+    document.getElementById('gateMsg').innerHTML='<div class="msg err">Save नहीं हो पाया: '+(e&&e.message?e.message:'फिर कोशिश करें')+'</div>';
+  }
+}
+function doLogin(){
+  const pin=document.getElementById('loginPin').value.trim();
+  let s=null;
+  if(pin && pin===settings.adminPin) s={type:'admin'};
+  else { const st=(settings.staff||[]).find(x=>x.pin===pin); if(st) s={type:'staff',id:st.id}; }
+  if(!s){ document.getElementById('gateMsg').innerHTML='<div class="msg err">गलत PIN</div>'; return; }
+  staffSession=s;
+  try{sessionStorage.setItem('apm_session',JSON.stringify(staffSession));}catch(e){}
+  render();
+}
+function noAccess(){ return `<div class="card">इस section का access आपके पास नहीं है। Admin से access माँगें।</div>`; }
+
+// ---------- SALE ----------
+let cart=[];
+function saleView(){
+  const opts = parts.map(p=>`<option value="${p.id}">${p.name} (Stock:${p.qty})</option>`).join('');
+  const cartRows = cart.map((c,i)=>`<tr><td>${c.name}</td><td>${c.qty}</td><td>${fmt(c.price*c.qty)}</td>
+    <td><button class="ghost" onclick="removeCart(${i})">✕</button></td></tr>`).join('');
+  const sub = cart.reduce((s,c)=>s+c.price*c.qty,0);
+  const gst = Math.round(sub*(settings.gstRate||0)/100);
+  const total = sub+gst;
+  return `<div class="card">
+    <label>Part चुनें (Name/SKU)</label>
+    <div class="item-row">
+      <select id="pPart">${opts||'<option>कोई part नहीं — पहले Stock में add करें</option>'}</select>
+      <input id="pQty" type="number" min="1" value="1" placeholder="Qty">
+      <button onclick="addCart()">+</button>
+    </div>
+    ${cart.length?`<table><tr><th>Part</th><th>Qty</th><th>Total</th><th></th></tr>${cartRows}</table>
+    <div class="row" style="justify-content:space-between;margin-top:6px"><span class="sub">Subtotal</span><span>${fmt(sub)}</span></div>
+    <div class="row" style="justify-content:space-between"><span class="sub">GST (${settings.gstRate||0}%)</span><span>${fmt(gst)}</span></div>
+    <div class="row" style="justify-content:space-between;margin-top:4px">
+      <b>Grand Total: ${fmt(total)}</b><button onclick="confirmSale()">Sale पक्की करें ✅</button>
+    </div>`:'<div class="sub">Cart खाली है</div>'}
+    <div id="saleMsg"></div>
+  </div>
+  <div class="card"><b>हाल की Sales</b>
+    <table><tr><th>Date</th><th>Total</th><th>Profit</th><th></th></tr>
+    ${sales.slice().reverse().slice(0,8).map(s=>`<tr><td>${new Date(s.date).toLocaleDateString('en-IN')}</td><td>${fmt(s.grandTotal||s.total)}</td><td>${fmt(s.profit)}</td><td><button class="ghost" onclick='printInvoice(${JSON.stringify(s).replace(/'/g,"&apos;")})'>🖨</button></td></tr>`).join('')||'<tr><td colspan=4>—</td></tr>'}
+    </table>
+  </div>`;
+}
+function addCart(){
+  const id=document.getElementById('pPart').value, qty=parseInt(document.getElementById('pQty').value)||1;
+  const p=parts.find(x=>x.id===id); if(!p) return;
+  if(qty>p.qty){ alert("इतना stock उपलब्ध नहीं है (उपलब्ध: "+p.qty+")"); return; }
+  cart.push({id:p.id,name:p.name,sku:p.sku||'',qty,price:p.price,cost:p.purchase}); render();
+}
+function removeCart(i){ cart.splice(i,1); render(); }
+function printInvoice(s){
+  const w=window.open('','_blank');
+  const gstAmt = s.gst!=null?s.gst:0;
+  w.document.write(`<html><head><title>Invoice</title><style>
+    body{font-family:sans-serif;padding:20px;color:#111}
+    h2{margin:0}table{width:100%;border-collapse:collapse;margin-top:14px}
+    th,td{border-bottom:1px solid #ccc;padding:6px;text-align:left;font-size:13px}
+    .tot{text-align:right;margin-top:10px;font-size:15px}
+  </style></head><body>
+  <h2>${settings.shopName||'Auto Parts Shop'}</h2>
+  <div>Invoice Date: ${new Date(s.date).toLocaleString('en-IN')}</div>
+  <table><tr><th>Part</th><th>SKU</th><th>Qty</th><th>Price</th><th>Amount</th></tr>
+  ${s.items.map(i=>`<tr><td>${i.name}</td><td>${i.sku||'-'}</td><td>${i.qty}</td><td>₹${i.price}</td><td>₹${i.qty*i.price}</td></tr>`).join('')}
+  </table>
+  <div class="tot">Subtotal: ₹${s.total}<br>GST: ₹${gstAmt}<br><b>Grand Total: ₹${s.grandTotal||s.total}</b></div>
+  <script>window.print()<\/script>
+  </body></html>`);
+}
+async function confirmSale(){
+  if(!cart.length||!db) return;
+  const btn=document.getElementById('saleMsg'); if(btn) btn.innerHTML='<div class="msg">Saving…</div>';
+  const total=cart.reduce((s,c)=>s+c.price*c.qty,0);
+  const gst=Math.round(total*(settings.gstRate||0)/100);
+  const grandTotal=total+gst;
+  const profit=cart.reduce((s,c)=>s+(c.price-c.cost)*c.qty,0);
+  const cartSnapshot=cart; cart=[];
+  const saleData={date:new Date().toISOString(),items:cartSnapshot,total,gst,grandTotal,profit,by:(currentStaff()?currentStaff().name:'Admin')};
+  try{
+    const res = await db.collection("sales").add(saleData);
+    const saleId = (res&&res.id) || (res&&res.ref&&res.ref.id) || ('sl'+Date.now());
+    sales.push(Object.assign({id:saleId},saleData));
+    await Promise.all(cartSnapshot.map(c=>{
+      const p=parts.find(x=>x.id===c.id);
+      if(!p) return Promise.resolve();
+      const newQty=p.qty-c.qty; p.qty=newQty;
+      return db.doc("parts/"+c.id).update({qty:newQty});
+    }));
+    render();
+    const m=document.getElementById('saleMsg'); if(m) m.innerHTML='<div class="msg ok">Sale save हो गई ✅</div>';
+  }catch(e){
+    cart=cartSnapshot;
+    render();
+    const m=document.getElementById('saleMsg'); if(m) m.innerHTML='<div class="msg err">Save नहीं हो पाया: '+(e&&e.message?e.message:'कृपया फिर कोशिश करें')+'</div>';
+  }
+}
+
+// ---------- DASHBOARD ----------
+function dashView(){
+  const now=new Date();
+  const today=sales.filter(s=>new Date(s.date).toDateString()===now.toDateString());
+  const month=sales.filter(s=>{const d=new Date(s.date);return d.getMonth()===now.getMonth()&&d.getFullYear()===now.getFullYear();});
+  const year=sales.filter(s=>new Date(s.date).getFullYear()===now.getFullYear());
+  const sum=(arr,k)=>arr.reduce((a,b)=>a+(b[k]||0),0);
+  const byMonth={};
+  sales.forEach(s=>{const d=new Date(s.date);const k=d.getFullYear()+"-"+String(d.getMonth()+1).padStart(2,'0');
+    byMonth[k]=byMonth[k]||{sale:0,profit:0};byMonth[k].sale+=s.total;byMonth[k].profit+=s.profit;});
+  const rows=Object.entries(byMonth).sort().reverse().slice(0,12)
+    .map(([k,v])=>`<tr><td>${k}</td><td>${fmt(v.sale)}</td><td>${v.profit>=0?'':'-'}${fmt(Math.abs(v.profit))}</td></tr>`).join('');
+  return `<div class="card"><b>Sales Dashboard</b>
+    <div class="row" style="margin-top:10px">
+      <div class="stat"><b>${fmt(sum(today,'total'))}</b><span>आज की Sale</span></div>
+      <div class="stat"><b>${fmt(sum(month,'total'))}</b><span>इस महीने</span></div>
+      <div class="stat"><b>${fmt(sum(year,'total'))}</b><span>इस साल</span></div>
+    </div>
+    <div class="row" style="margin-top:8px">
+      <div class="stat"><b style="color:var(--accent2)">${fmt(sum(today,'profit'))}</b><span>आज Profit</span></div>
+      <div class="stat"><b style="color:var(--accent2)">${fmt(sum(month,'profit'))}</b><span>Month Profit</span></div>
+      <div class="stat"><b style="color:var(--accent2)">${fmt(sum(year,'profit'))}</b><span>Year Profit</span></div>
+    </div>
+  </div>
+  <div class="card"><b>Month-wise Profit/Loss</b>
+    <table><tr><th>Month</th><th>Sale</th><th>Profit/Loss</th></tr>${rows||'<tr><td colspan=3>Data नहीं है</td></tr>'}</table>
+  </div>
+  <div class="card"><b>Backup</b><div class="sub">Google Drive को सीधे यहाँ से sync करना possible नहीं (browser security)। नीचे से पूरा data JSON file में download करें और उसे अपनी Drive में manually upload/save कर लें — data वैसे भी real-time cloud में save होता रहता है।</div>
+    <button onclick="doBackup()">📥 Backup Download करें</button>
+  </div>`;
+}
+function doBackup(){
+  const data=JSON.stringify({settings,parts,sales},null,2);
+  const blob=new Blob([data],{type:'application/json'});
+  const url=URL.createObjectURL(blob);
+  const a=document.createElement('a');
+  a.href=url; a.download="auto-parts-backup-"+Date.now()+".json";
+  document.body.appendChild(a); a.click(); document.body.removeChild(a);
+  URL.revokeObjectURL(url);
+}
+
+// ---------- STOCK ----------
+function stockView(){
+  const rows=parts.map(p=>`<tr><td>${p.name}</td><td>${p.sku||'-'}</td><td>${p.category||'-'}</td><td>${fmt(p.purchase)}</td><td>${fmt(p.price)}</td>
+    <td class="${p.qty<=(p.minQty||0)?'low':''}">${p.qty}</td>
+    <td><button class="ghost" onclick="editPart('${p.id}')">✎</button> <button class="danger" onclick="delPart('${p.id}')">✕</button></td></tr>`).join('');
+  return `<div class="card">
+    <b id="pfTitle">नया Part जोड़ें</b>
+    <input type="hidden" id="pfId">
+    <label>Part Name</label><input id="pfName" placeholder="जैसे: Brake Pad">
+    <label>SKU / Barcode Code</label><input id="pfSku" placeholder="जैसे: BRK-001 या barcode number">
+    <label>Category</label><input id="pfCat" placeholder="जैसे: Brakes">
+    <div class="row">
+      <div style="flex:1"><label>Purchase Price</label><input id="pfPurchase" type="number"></div>
+      <div style="flex:1"><label>Sale Price</label><input id="pfPrice" type="number"></div>
+    </div>
+    <div class="row">
+      <div style="flex:1"><label>Quantity</label><input id="pfQty" type="number"></div>
+      <div style="flex:1"><label>Min Stock Alert</label><input id="pfMin" type="number" value="2"></div>
+    </div>
+    <div class="row" style="margin-top:8px"><button onclick="savePart()">Save</button><button class="ghost" onclick="resetForm()">Clear</button></div>
+    <div id="stockMsg"></div>
+  </div>
+  <div class="card"><b>Stock List</b>
+    <table><tr><th>Name</th><th>SKU</th><th>Cat</th><th>Cost</th><th>Sale₹</th><th>Qty</th><th></th></tr>
+    ${rows||'<tr><td colspan=7>कोई part नहीं जोड़ा गया</td></tr>'}</table>
+  </div>`;
+}
+function resetForm(){ ['pfId','pfName','pfSku','pfCat','pfPurchase','pfPrice','pfQty'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('pfMin').value=2; document.getElementById('pfTitle').textContent='नया Part जोड़ें'; }
+function editPart(id){
+  const p=parts.find(x=>x.id===id); if(!p) return;
+  document.getElementById('pfId').value=id;
+  document.getElementById('pfName').value=p.name;
+  document.getElementById('pfSku').value=p.sku||'';
+  document.getElementById('pfCat').value=p.category||'';
+  document.getElementById('pfPurchase').value=p.purchase;
+  document.getElementById('pfPrice').value=p.price;
+  document.getElementById('pfQty').value=p.qty;
+  document.getElementById('pfMin').value=p.minQty||2;
+  document.getElementById('pfTitle').textContent='Part Edit करें';
+}
+async function savePart(){
+  const id=document.getElementById('pfId').value;
+  const data={
+    name:document.getElementById('pfName').value.trim(),
+    sku:document.getElementById('pfSku').value.trim(),
+    category:document.getElementById('pfCat').value.trim(),
+    purchase:parseFloat(document.getElementById('pfPurchase').value)||0,
+    price:parseFloat(document.getElementById('pfPrice').value)||0,
+    qty:parseInt(document.getElementById('pfQty').value)||0,
+    minQty:parseInt(document.getElementById('pfMin').value)||0
+  };
+  if(!data.name) return alert("Part का नाम डालें");
+  const msg=document.getElementById('stockMsg');
+  msg.innerHTML='<div class="msg">Saving…</div>';
+  try{
+    if(id){
+      await db.doc("parts/"+id).update(data);
+      const idx=parts.findIndex(p=>p.id===id);
+      if(idx>=0) parts[idx]=Object.assign({},parts[idx],data); else parts.push(Object.assign({id},data));
+    } else {
+      const res = await db.collection("parts").add(data);
+      const newId = (res&&res.id) || (res&&res.ref&&res.ref.id) || ('p'+Date.now());
+      parts.push(Object.assign({id:newId},data));
+    }
+    msg.innerHTML='<div class="msg ok">Save हो गया ✅</div>';
+    resetForm();
+    render();
+  }catch(e){
+    msg.innerHTML='<div class="msg err">Save नहीं हो पाया: '+(e&&e.message?e.message:'कृपया फिर कोशिश करें')+'</div>';
+  }
+}
+async function delPart(id){
+  if(!confirm("यह part हटाना है?")) return;
+  try{ await db.doc("parts/"+id).delete(); parts=parts.filter(p=>p.id!==id); render(); }
+  catch(e){ alert("हटाने में दिक्कत आई, फिर कोशिश करें"); }
+}
+
+// ---------- SETTINGS ----------
+function settingsView(){
+  const staffRows=(settings.staff||[]).map(s=>`<tr><td>${s.name}</td><td>${s.pin}</td>
+    <td>${s.canSale?'✅':'—'}</td><td>${s.canStock?'✅':'—'}</td>
+    <td><button class="ghost" onclick="editStaff('${s.id}')">✎</button> <button class="danger" onclick="delStaff('${s.id}')">✕</button></td></tr>`).join('');
+  return `<div class="card"><b>Shop Settings</b>
+    <label>Shop का नाम</label><input id="stShop" value="${settings.shopName||''}">
+    <label>GST Rate (%)</label><input id="stGst" type="number" value="${settings.gstRate||0}">
+    <button style="margin-top:8px" onclick="saveShop()">Save</button>
+  </div>
+  <div class="card"><b>Admin PIN बदलें</b>
+    <label>नया Admin PIN</label><input id="newAdminPin" type="password" inputmode="numeric" maxlength="6" placeholder="4-6 digit">
+    <button style="margin-top:8px" onclick="changeAdminPin()">Update PIN</button>
+  </div>
+  <div class="card"><b>Staff / Access</b>
+    <div class="sub">हर staff member को नाम + PIN दो, aur decide karo unhe Sale/Stock me se kya access dena hai.</div>
+    <input type="hidden" id="stfId">
+    <label>नाम</label><input id="stfName" placeholder="जैसे: Ramesh">
+    <label>PIN (4-6 digit)</label><input id="stfPin" inputmode="numeric" maxlength="6" placeholder="1234">
+    <div class="row"><label style="width:auto"><input type="checkbox" id="stfSale" style="width:auto"> Sale Access</label>
+      <label style="width:auto"><input type="checkbox" id="stfStock" style="width:auto"> Stock Access</label></div>
+    <div class="row" style="margin-top:8px"><button onclick="saveStaff()">Save Staff</button><button class="ghost" onclick="resetStaffForm()">Clear</button></div>
+    <div id="stfMsg"></div>
+    <table style="margin-top:10px"><tr><th>नाम</th><th>PIN</th><th>Sale</th><th>Stock</th><th></th></tr>
+    ${staffRows||'<tr><td colspan=5>कोई staff add नहीं किया</td></tr>'}</table>
+  </div>
+  <div class="card"><b>Data Backup</b><div class="sub">पूरा data cloud में real-time save होता है। JSON backup Dashboard tab से download कर सकते हैं।</div></div>`;
+}
+async function saveShop(){
+  const prev=JSON.parse(JSON.stringify(settings));
+  settings.shopName=document.getElementById('stShop').value;
+  settings.gstRate=parseFloat(document.getElementById('stGst').value)||0;
+  try{ await db.doc("settings/config").set(settings); render(); }
+  catch(e){ settings=prev; alert("Save नहीं हो पाया, फिर कोशिश करें"); }
+}
+async function changeAdminPin(){
+  const pin=document.getElementById('newAdminPin').value.trim();
+  if(pin.length<4) return alert("कम से कम 4 digit PIN डालें");
+  const prevPin=settings.adminPin;
+  settings.adminPin=pin;
+  try{ await db.doc("settings/config").set(settings); alert("Admin PIN update हो गया"); }
+  catch(e){ settings.adminPin=prevPin; alert("Save नहीं हो पाया, फिर कोशिश करें"); }
+}
+function resetStaffForm(){ ['stfId','stfName','stfPin'].forEach(id=>document.getElementById(id).value='');
+  document.getElementById('stfSale').checked=false; document.getElementById('stfStock').checked=false; }
+function editStaff(id){
+  const s=(settings.staff||[]).find(x=>x.id===id); if(!s) return;
+  document.getElementById('stfId').value=id;
+  document.getElementById('stfName').value=s.name;
+  document.getElementById('stfPin').value=s.pin;
+  document.getElementById('stfSale').checked=!!s.canSale;
+  document.getElementById('stfStock').checked=!!s.canStock;
+}
+async function saveStaff(){
+  const id=document.getElementById('stfId').value;
+  const name=document.getElementById('stfName').value.trim();
+  const pin=document.getElementById('stfPin').value.trim();
+  if(!name||pin.length<4) return document.getElementById('stfMsg').innerHTML='<div class="msg err">नाम और कम से कम 4-digit PIN दोनों ज़रूरी हैं</div>';
+  const prev=JSON.parse(JSON.stringify(settings));
+  settings.staff=settings.staff||[];
+  const rec={id: id||('s'+Date.now()), name, pin, canSale:document.getElementById('stfSale').checked, canStock:document.getElementById('stfStock').checked};
+  const idx=settings.staff.findIndex(x=>x.id===rec.id);
+  if(idx>=0) settings.staff[idx]=rec; else settings.staff.push(rec);
+  try{
+    await db.doc("settings/config").set(settings);
+    resetStaffForm();
+    render();
+    const m=document.getElementById('stfMsg'); if(m) m.innerHTML='<div class="msg ok">Staff save हो गया ✅</div>';
+  }catch(e){
+    settings=prev;
+    document.getElementById('stfMsg').innerHTML='<div class="msg err">Save नहीं हो पाया, फिर कोशिश करें</div>';
+  }
+}
+async function delStaff(id){
+  if(!confirm("यह staff हटाना है?")) return;
+  const prev=JSON.parse(JSON.stringify(settings));
+  settings.staff=(settings.staff||[]).filter(x=>x.id!==id);
+  try{ await db.doc("settings/config").set(settings); render(); }
+  catch(e){ settings=prev; alert("हटाने में दिक्कत आई, फिर कोशिश करें"); }
+}
+
+boot();
+</script>
+</body>
+</html>
